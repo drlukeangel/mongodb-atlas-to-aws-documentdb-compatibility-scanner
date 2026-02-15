@@ -1,0 +1,16 @@
+# Environment and secrets
+.env
+
+# Scan output (generated at runtime)
+results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# MongoDB shell (downloaded binary, not part of the tool)
+mongosh*
+
+# AWS DocumentDB tools repo (cloned at runtime by the scanner)
+aws-docdb-tools/
