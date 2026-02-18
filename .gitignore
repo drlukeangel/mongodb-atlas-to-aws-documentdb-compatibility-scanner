@@ -2,7 +2,7 @@
 .env
 
 # Scan output (generated at runtime)
-results/
+reports/
 
 # Python
 __pycache__/

@@ -21,10 +21,8 @@ The final report includes:
 ## Prerequisites
 
 - Python 3.9+
-- An Atlas programmatic API key with **Project Read Only** permissions (minimum)
+- An Atlas **Organization Service Account** with Project Creator + Read Only permissions
 - Network access from your machine to Atlas clusters (for the live scans)
-
-For multi-project scanning, you also need an Atlas **Organization Service Account** with Project Creator + Read Only permissions.
 
 ## Quick Start
 
@@ -44,38 +42,40 @@ cp .env.example .env
 python run_compat_check.py
 ```
 
-Reports are written to `results/`. The main output is `results/project_summary.txt`.
+Reports are written to `reports/`. The main output is `reports/project_summary.txt`.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `atlas_public_key` | Yes | Atlas API public key |
-| `atlas_private_key` | Yes | Atlas API private key |
-| `atlas_group_id` | Yes | Atlas project (group) ID |
-| `atlas_cluster_name` | No | Scan only this cluster (omit to scan all) |
-| `atlas_organization_Client_ID` | No | Service account client ID (enables multi-project mode) |
-| `atlas_organization_Client_Secret` | No | Service account client secret |
+| `atlas_organization_Client_ID` | Yes | Service account client ID |
+| `atlas_organization_Client_Secret` | Yes | Service account client secret |
+| `atlas_group_id` | No | Project ID (used by setup_test_env.py to look up org ID) |
 | `ATLAS_LOG_DAYS` | No | Days of logs to download (default: 7) |
 | `ENGINEER_HOURLY_RATE` | No | Hourly rate for cost estimates (default: 0 = omit) |
 
-## Multi-Project Scanning
+Use `--project` and `--cluster` CLI args to scope the scan:
 
-If you set `atlas_organization_Client_ID` and `atlas_organization_Client_Secret`, the scanner will discover all projects visible to the service account and scan every cluster across the organization.
+```bash
+python run_compat_check.py                              # scan everything
+python run_compat_check.py --project "My Project"       # one project, all clusters
+python run_compat_check.py --cluster Cluster0            # one cluster across all projects
+python run_compat_check.py --project P --cluster C       # one cluster in one project
+```
 
 ## Test Harness
 
-`setup_test_env.py` creates a realistic multi-project Atlas environment with clusters seeded with every DocumentDB-incompatible feature. Use it to validate the scanner end-to-end:
+`tests/setup_test_env.py` creates a realistic multi-project Atlas environment with clusters seeded with every DocumentDB-incompatible feature. Use it to validate the scanner end-to-end:
 
 ```bash
 # Full test: create clusters, seed data, scan, teardown
-python setup_test_env.py
+python tests/setup_test_env.py
 
 # Keep clusters alive for manual inspection
-python setup_test_env.py --no-teardown
+python tests/setup_test_env.py --no-teardown
 
 # Clean up leftover test resources
-python setup_test_env.py --teardown-only
+python tests/setup_test_env.py --teardown-only
 ```
 
 This requires the organization service account credentials in `.env`.
@@ -83,11 +83,13 @@ This requires the organization service account credentials in `.env`.
 ## Project Structure
 
 ```
-atlas_api.py          # Atlas API client classes (Digest + OAuth2 auth)
-run_compat_check.py   # Main scanner and report generator
-setup_test_env.py     # Test harness (creates/seeds/scans/tears down test clusters)
-requirements.txt      # Python dependencies
-.env.example          # Environment variable template
+atlas_api.py              # Atlas API client classes (Digest + OAuth2 auth) -- read-only scanning
+run_compat_check.py       # Main scanner and report generator
+tests/
+  atlas_test_api.py       # Test-only API subclass (project create/delete)
+  setup_test_env.py       # Test harness (creates/seeds/scans/tears down test clusters)
+requirements.txt          # Python dependencies
+.env.example              # Environment variable template
 ```
 
 ## License

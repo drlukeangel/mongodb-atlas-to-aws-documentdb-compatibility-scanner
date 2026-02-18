@@ -6,21 +6,138 @@ a realistic multi-project Atlas environment with clusters seeded with every
 DocumentDB-incompatible feature, runs the full scan pipeline against them,
 and tears everything down afterwards.
 
-What It Creates
----------------
-Three Atlas projects, each containing one or more clusters:
+TEST LIFECYCLE
+==============
 
-    compat-test-web-{run_id}/
-        ct-app-{run_id}       M10 replica set: capped, validator, view with
-                              $graphLookup, plus unsupported query workload
-        ct-clean-{run_id}     M10 replica set: plain CRUD only (sanity check)
+The following ASCII diagram shows the six phases this script executes when
+you run it without flags.  Each phase depends on the one before it.
 
-    compat-test-analytics-{run_id}/
-        ct-ts-{run_id}        M30 sharded: time-series, pre/post images,
-                              system.js, sharded collections
+::
 
-    compat-test-platform-{run_id}/
-        ct-files-{run_id}     M10 replica set: GridFS collections
+    +---------------------------------------------------------------------+
+    |                     setup_test_env.py  LIFECYCLE                     |
+    +---------------------------------------------------------------------+
+    |                                                                     |
+    |  Phase 1          Phase 2          Phase 3          Phase 3b        |
+    |  CREATE           WAIT             SEED              MOCK LOGS      |
+    |  +-----------+    +-----------+    +------------+   +------------+  |
+    |  | Atlas API |    | Poll each |    | Connect to |   | Write fake |  |
+    |  | calls to  |--->| cluster   |--->| each       |-->| MongoDB    |  |
+    |  | create 3  |    | until     |    | cluster &  |   | JSON log   |  |
+    |  | projects  |    | state ==  |    | insert bad |   | files into |  |
+    |  | + 4       |    | "IDLE"    |    | data +     |   | reports/   |  |
+    |  | clusters  |    | (up to    |    | run bad    |   | so scanner |  |
+    |  |           |    |  25 min)  |    | queries    |   | finds them |  |
+    |  +-----------+    +-----------+    +------------+   +------------+  |
+    |                                                          |          |
+    |                                                          v          |
+    |                    Phase 5          Phase 4                         |
+    |                    TEARDOWN         SCAN                            |
+    |                    +-----------+    +------------+                  |
+    |                    | Delete    |    | For each   |                  |
+    |                    | clusters, |<---| project:   |                  |
+    |                    | users,    |    | run compat |                  |
+    |                    | projects  |    | scanner    |                  |
+    |                    | via Atlas |    | pipeline   |                  |
+    |                    | API       |    | (logs +    |                  |
+    |                    |           |    |  schema)   |                  |
+    |                    +-----------+    +------------+                  |
+    |                                                                     |
+    +---------------------------------------------------------------------+
+
+    Flags that alter the lifecycle:
+        --no-teardown    -> Phases 1-4 only; skip Phase 5
+        --teardown-only  -> Skip Phases 1-4; run Phase 5 for any existing
+                            compat-test-* projects found in the org
+
+TEST TOPOLOGY
+=============
+
+The script creates the following Atlas projects and clusters.  Each project
+simulates a different team/workload, and each cluster is seeded with a
+specific set of DocumentDB-incompatible features.
+
+::
+
+    +------------------------------------------------------------------+
+    |                       Atlas Organization                         |
+    +------------------------------------------------------------------+
+    |                                                                  |
+    |  compat-test-web-{run_id}          (simulates a web app team)    |
+    |  +------------------------------------------------------------+  |
+    |  |                                                            |  |
+    |  |  ct-app-{run_id}  [M10 ReplicaSet, 3 nodes, US_EAST_1]    |  |
+    |  |  Seeded incompatibilities:                                 |  |
+    |  |    - Capped collection (logs)                              |  |
+    |  |    - $jsonSchema validator (posts)                         |  |
+    |  |    - View using $graphLookup (employee_hierarchy)          |  |
+    |  |    - Query workload: $facet, $bucket, $bucketAuto,         |  |
+    |  |      $merge, $out, $unionWith, $where, $accumulator,       |  |
+    |  |      $function, $setWindowFields, $text                    |  |
+    |  |                                                            |  |
+    |  |  ct-clean-{run_id}  [M10 ReplicaSet, 3 nodes, US_EAST_1]  |  |
+    |  |  Seeded incompatibilities: NONE (sanity check)             |  |
+    |  |    - Plain users + orders collections with standard CRUD   |  |
+    |  |    - The scanner should report zero issues here            |  |
+    |  |                                                            |  |
+    |  +------------------------------------------------------------+  |
+    |                                                                  |
+    |  compat-test-analytics-{run_id}    (simulates a data team)       |
+    |  +------------------------------------------------------------+  |
+    |  |                                                            |  |
+    |  |  ct-ts-{run_id}  [M30 Sharded, 2 shards, US_EAST_1]      |  |
+    |  |  Seeded incompatibilities:                                 |  |
+    |  |    - Time-series collection (weather)                      |  |
+    |  |    - Change-stream pre/post images (events)                |  |
+    |  |    - system.js server-side function (addNums)              |  |
+    |  |    - Sharded collection (sensor_data on device_id)         |  |
+    |  |    - Query workload: $densify, $fill, $rank, $denseRank,   |  |
+    |  |      $shift, $sin/$cos/$tan/$degreesToRadians, $getField,  |  |
+    |  |      $dateTrunc, $dateDiff, mapReduce, $collStats,         |  |
+    |  |      $planCacheStats, $changeStream, $expMovingAvg,        |  |
+    |  |      $derivative, $integral                                |  |
+    |  |                                                            |  |
+    |  +------------------------------------------------------------+  |
+    |                                                                  |
+    |  compat-test-platform-{run_id}     (simulates a platform team)   |
+    |  +------------------------------------------------------------+  |
+    |  |                                                            |  |
+    |  |  ct-files-{run_id}  [M10 ReplicaSet, 3 nodes, US_EAST_1]  |  |
+    |  |  Seeded incompatibilities:                                 |  |
+    |  |    - GridFS file storage (fs.files + fs.chunks)            |  |
+    |  |    - Query workload: $regexMatch, $regexFind,              |  |
+    |  |      $regexFindAll, $replaceAll, $replaceOne, $bsonSize,   |  |
+    |  |      $binarySize, $isNumber, $topN, $bottomN, $firstN,    |  |
+    |  |      $lastN, $maxN, $minN, $sampleRate                    |  |
+    |  |                                                            |  |
+    |  +------------------------------------------------------------+  |
+    |                                                                  |
+    +------------------------------------------------------------------+
+
+MOCK LOG STRATEGY
+=================
+
+Why mock logs?
+    The compatibility scanner has TWO detection methods:
+
+    1. **Schema scan** -- inspects collections, views, indexes, and validators
+       for incompatible features (capped collections, time-series, GridFS, etc.)
+    2. **Log scan** -- parses MongoDB slow-query logs looking for unsupported
+       aggregation operators ($graphLookup, $bucket, $merge, etc.)
+
+    Problem: Atlas free/shared-tier clusters don't always produce slow-query
+    log entries for every operator, even when we deliberately run those queries.
+    The queries may be too fast to appear in slow-query logs, or Atlas log
+    download may lag behind real-time.
+
+    Solution: We generate mock log files in MongoDB 8.0 structured JSON
+    format and place them in the expected reports directory *before* the
+    scanner runs.  The scanner's log-parsing code treats them identically
+    to real downloaded logs, so we get deterministic coverage of every
+    operator category.
+
+    Each mock log entry is duplicated 3 times with different timestamps to
+    simulate repeated usage and make the log output more realistic.
 
 Each cluster is seeded with data AND a workload of queries using unsupported
 operators, plus mock log files that ensure the compat-tool log scanner fires
@@ -39,17 +156,15 @@ Usage
 -----
 ::
 
-    python setup_test_env.py                # full run: create, seed, scan, teardown
-    python setup_test_env.py --no-teardown  # keep clusters alive for inspection
-    python setup_test_env.py --teardown-only  # just delete compat-test-* resources
+    python tests/setup_test_env.py                # full run: create, seed, scan, teardown
+    python tests/setup_test_env.py --no-teardown  # keep clusters alive for inspection
+    python tests/setup_test_env.py --teardown-only  # just delete compat-test-* resources
 
 Environment Variables (in .env)
 -------------------------------
-Required (same as run_compat_check.py):
-    atlas_public_key, atlas_private_key, atlas_group_id
-
-Required for project creation/deletion:
+Required:
     atlas_organization_Client_ID, atlas_organization_Client_Secret
+    atlas_group_id          (used to look up the org ID)
 """
 
 import argparse
@@ -58,11 +173,17 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure the project root is on the Python path so we can import
+# atlas_api and run_compat_check from the parent directory.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = _PROJECT_ROOT
 
-from atlas_api import AtlasAPI, AtlasOrgAPI, TEMP_USER  # noqa: F401
+from atlas_api import TEMP_USER  # noqa: F401
+from tests.atlas_test_api import AtlasTestOrgAPI as AtlasOrgAPI
 from run_compat_check import (
     RESULTS_DIR,
     _banner,
@@ -1069,7 +1190,7 @@ def _get_mock_entries(cluster_name: str) -> list[tuple[str, str]]:
 
 
 def generate_mock_logs(project_map: dict[str, dict]) -> None:
-    """Pre-create mock MongoDB log files in each cluster's results directory.
+    """Pre-create mock MongoDB log files in each cluster's reports directory.
 
     The compat-tool log scanner will find these alongside real downloaded logs.
     """
@@ -1314,7 +1435,7 @@ def main() -> None:
         # Phase 5: Teardown (unless --no-teardown)
         if args.no_teardown:
             print("\n  --no-teardown: Projects and clusters left running.")
-            print("  Run 'python setup_test_env.py --teardown-only' to delete them.")
+            print("  Run 'python tests/setup_test_env.py --teardown-only' to delete them.")
         else:
             teardown_all(org_api, project_map)
 

@@ -10,25 +10,182 @@ MongoDB Atlas Admin API v2:
 
     AtlasOrgAPI     -- Organization-scoped client using OAuth2 Client Credentials
                        (Service Account Bearer token).  Required for operations
-                       that span multiple projects (e.g., creating/deleting
-                       projects, listing all projects in an org).
+                       that span multiple projects (e.g., listing all projects
+                       in an org).
 
     _OrgScopedAPI   -- Adapter that wraps AtlasOrgAPI to present the same
                        interface as AtlasAPI for a specific project.  Allows
                        scan functions written for AtlasAPI to work transparently
                        with org-level credentials.
 
-Architecture
-------------
+Authentication Flows
+--------------------
+There are two completely separate auth paths depending on which client
+you use.  The ASCII diagrams below show the HTTP-level flow for each.
+
+**Path A -- Digest Auth (AtlasAPI)**::
+
+    ┌────────────┐                           ┌──────────────────┐
+    │  AtlasAPI   │  1) GET /clusters         │  Atlas Admin API  │
+    │  (client)   │ ─────────────────────────>│  (server)         │
+    │             │                           │                   │
+    │             │  2) 401 + WWW-Authenticate│                   │
+    │             │     (nonce, realm, qop)   │                   │
+    │             │ <─────────────────────────│                   │
+    │             │                           │                   │
+    │             │  3) GET /clusters          │                   │
+    │             │     Authorization: Digest  │                   │
+    │             │     (username=public_key,  │                   │
+    │             │      response=hash(       │                   │
+    │             │        private_key+nonce)) │                   │
+    │             │ ─────────────────────────>│                   │
+    │             │                           │                   │
+    │             │  4) 200 OK + JSON body    │                   │
+    │             │ <─────────────────────────│                   │
+    └────────────┘                           └──────────────────┘
+
+    NOTE: The `requests` library handles steps 1-3 automatically via
+    HTTPDigestAuth.  You never see the initial 401 in your code -- it
+    happens behind the scenes inside the Session.
+
+**Path B -- OAuth2 Client Credentials (AtlasOrgAPI)**::
+
+    ┌──────────────┐                         ┌──────────────────┐
+    │ AtlasOrgAPI   │ 1) POST /oauth/token   │  Atlas OAuth      │
+    │ (client)      │    grant_type=          │  Token Endpoint   │
+    │               │    client_credentials   │                   │
+    │               │    Basic Auth (id:sec)  │                   │
+    │               │ ──────────────────────>│                   │
+    │               │                        │                   │
+    │               │ 2) 200 OK              │                   │
+    │               │    { access_token,     │                   │
+    │               │      expires_in: 3600 }│                   │
+    │               │ <──────────────────────│                   │
+    │               │                        └──────────────────┘
+    │               │
+    │               │                        ┌──────────────────┐
+    │               │ 3) GET /clusters       │  Atlas Admin API  │
+    │               │    Authorization:      │                   │
+    │               │    Bearer <token>      │                   │
+    │               │ ──────────────────────>│                   │
+    │               │                        │                   │
+    │               │ 4) 200 OK + JSON body  │                   │
+    │               │ <──────────────────────│                   │
+    └──────────────┘                        └──────────────────┘
+
+    NOTE: Step 1 happens automatically the first time you make a
+    request, and again whenever the cached token is within 60 seconds
+    of expiry (see _ensure_token()).
+
+Class Hierarchy and Delegation
+------------------------------
 ::
 
-    AtlasOrgAPI (org-wide, Bearer token)
-        |
-        +-- .as_atlas_api(group_id) --> _OrgScopedAPI (project-scoped facade)
-        |                                   |
-        |                                   +-- quacks like AtlasAPI
-        |
-    AtlasAPI (project-scoped, Digest auth)
+    ┌─────────────────────────────────────────────────────────────┐
+    │                     AtlasOrgAPI                              │
+    │  (Org-scoped, OAuth2 Bearer token)                          │
+    │                                                              │
+    │  Owns: _session, _client_id, _client_secret, _token         │
+    │  Methods: get(), post(), delete()         [org-level paths]  │
+    │           group_get(), group_post(), group_delete()           │
+    │           list_projects()                                     │
+    │           as_atlas_api(group_id) --> _OrgScopedAPI            │
+    └────────────────────┬────────────────────────────────────────┘
+                         │  .as_atlas_api(group_id)
+                         v
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    _OrgScopedAPI                              │
+    │  (Adapter / Facade -- same interface as AtlasAPI)            │
+    │                                                              │
+    │  Holds: reference to parent AtlasOrgAPI + a group_id         │
+    │  Delegates: get()    --> org.group_get(group_id, ...)         │
+    │             post()   --> org.group_post(group_id, ...)        │
+    │             delete() --> org.group_delete(group_id, ...)      │
+    │  Also has: list_clusters(), create_temp_user(), etc.          │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │                      AtlasAPI                                │
+    │  (Project-scoped, HTTP Digest Auth)                          │
+    │                                                              │
+    │  Owns: _session (with Digest auth), group_id                 │
+    │  Methods: get(), post(), delete()       [project-level]      │
+    │           get_org(), post_org(), delete_org()  [org-level]   │
+    │           list_clusters(), create_temp_user(), etc.           │
+    │           for_group(id) --> new AtlasAPI (shared session)     │
+    └─────────────────────────────────────────────────────────────┘
+
+    Scan functions accept either AtlasAPI or _OrgScopedAPI -- they
+    only call get(), post(), delete(), list_clusters(), etc., so
+    both classes are interchangeable (duck typing / structural
+    subtyping).
+
+HTTP Status Code Conventions
+-----------------------------
+The Atlas Admin API uses specific HTTP status codes that this module
+handles in several places:
+
+    409 Conflict
+        Means "this resource already exists."  For temp-user creation
+        (create_temp_user), we catch 409 and handle it gracefully:
+        delete the stale user and recreate with a fresh password.
+        This makes the operation idempotent and safe to retry.
+
+    404 Not Found
+        On DELETE operations (delete_temp_user), a 404 means the resource
+        is already gone.  We silently accept this because the desired end
+        state (resource does not exist) is already achieved.  This avoids
+        crashes during cleanup of partially-failed previous runs.
+
+    200 / 202 / 204
+        All indicate success on DELETE.  Atlas is inconsistent about which
+        code it returns for different resource types, so we accept all three.
+
+    401 Unauthorized
+        For Digest auth, the initial 401 is expected -- it is part of the
+        HTTP Digest handshake (the server sends back a nonce in the 401
+        response).  The `requests` library retries automatically with
+        credentials.  For OAuth2, a 401 on the token endpoint means
+        invalid client_id/client_secret.
+
+Atlas API v2 Versioned Accept Headers
+--------------------------------------
+The Atlas Admin API v2 requires a versioned Accept header on every request::
+
+    application/vnd.atlas.2023-02-01+json
+
+This is NOT a standard "application/json" Accept header.  The date
+(2023-02-01) pins the API response format to a specific version, so
+Atlas can evolve its API without breaking existing clients.  If you
+omit this header or use "application/json", Atlas may return a 406
+Not Acceptable error or unexpected response format.
+
+For log file downloads, a gzip variant is used::
+
+    application/vnd.atlas.2023-02-01+gzip
+
+Both AtlasAPI and _OrgScopedAPI define these as class constants:
+JSON_ACCEPT and GZIP_ACCEPT.
+
+The TEMP_USER Lifecycle
+-----------------------
+The constant ``TEMP_USER = "docdb_compat_scan"`` defines the username
+for a short-lived MongoDB database user created during each scan run::
+
+    1. Scan starts --> create_temp_user(password)
+       Creates user "docdb_compat_scan" with readAnyDatabase +
+       clusterMonitor roles in the "admin" database.
+
+    2. Scan runs   --> connects to each cluster with this user to
+       read schemas, indexes, server status, profiler data, etc.
+
+    3. Scan ends   --> delete_temp_user()
+       Removes the user so no stale credentials remain.
+
+If a previous scan was interrupted (Ctrl+C, crash), the user may still
+exist.  create_temp_user() handles this by catching HTTP 409 (conflict),
+deleting the stale user, waiting 2 seconds for Atlas to propagate the
+delete, and creating a fresh one.
 
 Both AtlasAPI and _OrgScopedAPI expose the same core methods used by
 scan functions in run_compat_check.py:
@@ -61,9 +218,6 @@ Environment Variables
 This module does not load .env itself -- callers are responsible for
 calling ``load_dotenv()`` before constructing API instances.
 
-Required for AtlasAPI:
-    atlas_public_key, atlas_private_key, atlas_group_id
-
 Required for AtlasOrgAPI:
     atlas_organization_Client_ID, atlas_organization_Client_Secret
 """
@@ -92,9 +246,9 @@ class AtlasOrgAPI:
     Uses the Client Credentials grant to obtain a Bearer token, which is
     automatically refreshed when it approaches expiry (60-second buffer).
 
-    This client is NOT scoped to a specific project -- it can list/create/delete
-    projects across the entire organization.  For project-scoped operations,
-    use :meth:`as_atlas_api` to get an AtlasAPI-compatible wrapper.
+    This client is NOT scoped to a specific project -- it can list projects
+    across the entire organization.  For project-scoped operations, use
+    :meth:`as_atlas_api` to get an AtlasAPI-compatible wrapper.
 
     Attributes:
         BASE: Atlas Admin API v2 base URL.
@@ -212,22 +366,6 @@ class AtlasOrgAPI:
 
     # -- High-level org helpers ---------------------------------------------
 
-    def get_org_id_from_project(self, group_id: str) -> str:
-        """Look up the organization ID that owns a given project.
-
-        Args:
-            group_id: Atlas project (group) ID.
-
-        Returns:
-            Organization ID string.
-
-        Raises:
-            requests.HTTPError: If the project lookup fails.
-        """
-        resp = self.get(f"/groups/{group_id}")
-        resp.raise_for_status()
-        return resp.json()["orgId"]
-
     def list_projects(self) -> list[dict]:
         """List all projects visible to this service account.
 
@@ -237,46 +375,6 @@ class AtlasOrgAPI:
         resp = self.get("/groups")
         resp.raise_for_status()
         return resp.json().get("results", [])
-
-    def create_project(self, name: str, org_id: str) -> dict:
-        """Create a new Atlas project, or return the existing one if name conflicts.
-
-        Atlas returns HTTP 409 if a project with the same name already exists
-        in the organization.  In that case, we look up and return the existing
-        project rather than failing.
-
-        Args:
-            name: Desired project name.
-            org_id: Organization ID to create the project in.
-
-        Returns:
-            Project document dict.
-
-        Raises:
-            requests.HTTPError: If creation fails for reasons other than conflict.
-        """
-        resp = self.post("/groups", {"name": name, "orgId": org_id})
-        if resp.status_code == 409:
-            # Name conflict -- find and return the existing project
-            for p in self.list_projects():
-                if p["name"] == name:
-                    return p
-            resp.raise_for_status()  # should not reach here
-        resp.raise_for_status()
-        return resp.json()
-
-    def delete_project(self, group_id: str) -> None:
-        """Delete a project by ID.  Silently ignores 404 (already deleted).
-
-        Args:
-            group_id: Project ID to delete.
-        """
-        resp = self.delete(f"/groups/{group_id}")
-        if resp.status_code not in (200, 202, 204, 404):
-            print(
-                f"  [warn] Could not delete project {group_id}: "
-                f"{resp.status_code} {resp.text[:200]}"
-            )
 
     # -- Group-scoped helpers (for projects created by this service account) -
 
@@ -697,43 +795,6 @@ class AtlasAPI:
         resp = self.get("")  # GET /groups/{groupId}
         resp.raise_for_status()
         return resp.json()["orgId"]
-
-    def create_project(self, name: str, org_id: str) -> dict:
-        """Create a new Atlas project.
-
-        If a project with the same name already exists (HTTP 409), the
-        existing project is returned instead.
-
-        Args:
-            name: Desired project name.
-            org_id: Organization ID to create the project in.
-
-        Returns:
-            Project document dict.
-        """
-        resp = self.post_org("/groups", {"name": name, "orgId": org_id})
-        if resp.status_code == 409:
-            # Already exists -- find it
-            all_projects = self.get_org("/groups").json().get("results", [])
-            for p in all_projects:
-                if p["name"] == name:
-                    return p
-            resp.raise_for_status()  # should not reach here
-        resp.raise_for_status()
-        return resp.json()
-
-    def delete_project(self, group_id: str) -> None:
-        """Delete a project by its ID.  Silently ignores 404.
-
-        Args:
-            group_id: Project ID to delete.
-        """
-        resp = self.delete_org(f"/groups/{group_id}")
-        if resp.status_code not in (200, 202, 204, 404):
-            print(
-                f"  [warn] Could not delete project {group_id}: "
-                f"{resp.status_code} {resp.text[:200]}"
-            )
 
     def list_clusters(self) -> list[dict]:
         """List all clusters in the current project.

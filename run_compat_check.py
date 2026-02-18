@@ -6,8 +6,137 @@ compatibility with Amazon DocumentDB.  It orchestrates three open-source
 scanning tools plus a custom live-cluster feature scan, then generates a
 single consolidated assessment report.
 
-Scan Pipeline
--------------
+FULL SCAN PIPELINE (ASCII Diagram)
+===================================
+
+The diagram below shows everything that happens when you run this script.
+Each numbered box is a "step" function in this file.  Data flows top to
+bottom; arrows show what each step produces and what later steps consume.
+
+::
+
+    +----------------------------------------------------------+
+    |                    main() / entry point                   |
+    |  - Loads .env credentials                                |
+    |  - Discovers Atlas projects via AtlasOrgAPI               |
+    |  - Iterates over projects, calling _scan_project() each   |
+    +------------------------------+---------------------------+
+                                   |
+                   for each project|
+                                   v
+    +----------------------------------------------------------+
+    |  _scan_project(api, project_name, target_cluster)        |
+    |  - Lists clusters in the project via Atlas API            |
+    |  - Creates a temp read-only DB user (step 3)              |
+    |  - Iterates clusters, calling scan_cluster() for each     |
+    |  - Cleans up (deletes temp user) in finally block         |
+    +------------------------------+---------------------------+
+                                   |
+                   for each cluster|
+                                   v
+    +----------------------------------------------------------+
+    |                scan_cluster(api, cluster, uri)            |
+    |  Runs ALL four checks below in sequence, then merges     |
+    |  all remediation items into one list per cluster.         |
+    +------------------------------+---------------------------+
+                |          |           |            |
+                v          v           v            v
+    +----------+  +--------+  +--------+  +-----------------+
+    | Step 4   |  | Step 5 |  | Step 6 |  | Step 7          |
+    | compat   |  | compat |  | index  |  | feature_scan    |
+    | -tool    |  | -tool  |  | -tool  |  | (PyMongo live)  |
+    | (URI)    |  | (logs) |  |        |  |                 |
+    +----+-----+  +----+---+  +----+---+  +--------+--------+
+         |             |           |                |
+         v             v           v                v
+    compat_uri    compat_logs   index_issues    feature_scan
+    _report.txt   _report.txt  _report.txt     _report.txt
+         |             |           |                |
+         +------+------+-----------+--------+-------+
+                |                           |
+                v                           v
+    +-------------------+       +-------------------------+
+    | _build_operator   |       | remediation_items list  |
+    | _remediation      |       | (from feature scan)     |
+    | _items()          |       +------------+------------+
+    | (parses compat    |                    |
+    |  reports for ops) |                    |
+    +--------+----------+                    |
+             |        +----------------------+
+             v        v
+    +----------------------------------------------------------+
+    |  step_summary()  (Step 8)                                |
+    |  Concatenates all 4 sub-reports into one cluster file    |
+    |  -> reports/<cluster>/summary.txt                        |
+    +---------------------------+------------------------------+
+                                |
+          after ALL clusters    |
+          in ALL projects       |
+                                v
+    +----------------------------------------------------------+
+    |  _write_project_summary()                                |
+    |  The "one file you send to your boss" -- merges every    |
+    |  cluster's results into a single org-wide report with:   |
+    |                                                          |
+    |    1. Migration Readiness  (ready / code / service)      |
+    |    2. Executive Summary    (counts + operator table)     |
+    |    3. Remediation Plan     (project > cluster > db)      |
+    |    4. Detailed Scan Output (raw tool output per cluster) |
+    |                                                          |
+    |  -> reports/project_summary.txt                          |
+    +----------------------------------------------------------+
+
+
+Relationship Between Files
+==========================
+
+This project consists of three Python files that work together:
+
+::
+
+    +------------------------------------------------------+
+    |                  atlas_api.py                         |
+    |  Handles ALL communication with the MongoDB Atlas    |
+    |  Admin API (v2).  Two auth strategies:               |
+    |    - AtlasAPI:      project-scoped, Digest auth      |
+    |    - AtlasOrgAPI:   org-scoped,     OAuth2 Bearer    |
+    |    - _OrgScopedAPI: adapter so org creds can act     |
+    |                     like project-scoped AtlasAPI      |
+    |                                                      |
+    |  Used by both run_compat_check.py AND                |
+    |  setup_test_env.py for every Atlas REST call.        |
+    +---+--------------------+-----------------------------+
+        |                    |
+        | imports            | imports
+        v                    v
+    +-------------------+   +------------------------------+
+    | run_compat_check  |   | setup_test_env.py            |
+    | .py (THIS FILE)   |   |                              |
+    |                   |   | TEST HARNESS that:           |
+    | PRODUCTION entry  |   |   1. Creates Atlas projects  |
+    | point.  Scans     |   |      + clusters              |
+    | real clusters     |   |   2. Seeds incompatible data |
+    | and generates     |   |   3. Calls scan_cluster()    |
+    | the report.       |   |      and _write_project      |
+    |                   |<--+      _summary() from this    |
+    | Can be called:    |   |      file to run the scan    |
+    |  - Standalone     |   |   4. Tears everything down   |
+    |    (python run_.py|   |                              |
+    |  - By test harness|   | Use: validates that the      |
+    |    (setup_test_env|   | scanner catches every known  |
+    |     imports it)   |   | incompatibility category.    |
+    +-------------------+   +------------------------------+
+
+In short:
+  - ``atlas_api.py``        = the HTTP client layer  (talks to Atlas)
+  - ``run_compat_check.py`` = the scan + report layer (THIS file)
+  - ``setup_test_env.py``   = the test harness        (creates fake workloads,
+                              imports from this file, then runs the scanner)
+
+
+Scan Pipeline (Details)
+=======================
+
 For each cluster, the following checks run in sequence:
 
     1. **compat-tool (URI)** -- connects to the live cluster via its
@@ -29,43 +158,67 @@ For each cluster, the following checks run in sequence:
        validators, views with unsupported pipeline stages, server-side
        JavaScript, and sharded collections.
 
+
 Report Output
--------------
-Results are written to ``results/<cluster_name>/`` with per-tool reports
-and a consolidated ``results/project_summary.txt`` that includes:
+=============
+
+Results are written to ``reports/<cluster_name>/`` with per-tool reports
+and a consolidated ``reports/project_summary.txt``.
+
+::
+
+    reports/
+    +-- <cluster_name>/
+    |   +-- compat_uri_report.txt       <-- Step 4 output
+    |   +-- compat_logs_report.txt      <-- Step 5 output
+    |   +-- atlas_logs/                 <-- Raw downloaded logs (Step 5)
+    |   |   +-- <hostname>_<port>.log
+    |   +-- index_dump/                 <-- Raw index JSON (Step 6)
+    |   +-- index_issues_report.txt     <-- Step 6 output
+    |   +-- feature_scan_report.txt     <-- Step 7 output
+    |   +-- summary.txt                 <-- Step 8: all 4 above concatenated
+    |
+    +-- <another_cluster>/
+    |   +-- ...
+    |
+    +-- project_summary.txt             <-- THE final report for all projects
+                                            (Migration Readiness, Executive
+                                             Summary, Remediation Plan,
+                                             Detailed Scan Output)
+
+The project_summary.txt includes:
 
     - Migration readiness breakdown (ready / code-changes / service-swap)
     - Unsupported operator inventory with migration paths
     - Per-project, per-cluster, per-database remediation plan
     - Effort estimates in developer-hours (and optional dollar cost)
 
+
 Usage
------
-Single-project mode (Digest auth)::
+=====
 
-    python run_compat_check.py
+::
 
-Multi-project mode (org service account)::
-
-    # Set atlas_organization_Client_ID and atlas_organization_Client_Secret
-    # in .env to scan all projects visible to the service account.
-    python run_compat_check.py
+    python run_compat_check.py                          # scan everything
+    python run_compat_check.py --project MyProject      # one project only
+    python run_compat_check.py --cluster Cluster0       # one cluster only
+    python run_compat_check.py --project P --cluster C  # one cluster in one project
 
 Environment Variables (in .env)
 -------------------------------
 Required:
-    atlas_public_key        Atlas API public key
-    atlas_private_key       Atlas API private key
-    atlas_group_id          Atlas project (group) ID
-
-Optional:
-    atlas_cluster_name      Scan only this cluster (omit to scan all)
     atlas_organization_Client_ID
-                            Service account client ID (enables multi-project mode)
+                            Service account client ID
     atlas_organization_Client_Secret
                             Service account client secret
+
+Optional:
     ATLAS_LOG_DAYS          Days of logs to download (default: 7)
     ENGINEER_HOURLY_RATE    Hourly rate for cost estimates (default: 0 = omit)
+
+CLI Arguments:
+    --project NAME          Scan only this project (omit to scan all)
+    --cluster NAME          Scan only this cluster (omit to scan all)
 
 Dependencies
 ------------
@@ -86,14 +239,14 @@ from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
-from atlas_api import AtlasAPI, AtlasOrgAPI, _OrgScopedAPI, TEMP_USER  # noqa: F401
+from atlas_api import AtlasOrgAPI, _OrgScopedAPI, TEMP_USER  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 TOOLS_DIR = BASE_DIR / "aws-docdb-tools"
-RESULTS_DIR = BASE_DIR / "results"
+RESULTS_DIR = BASE_DIR / "reports"
 COMPAT_TOOL = TOOLS_DIR / "compat-tool" / "compat.py"
 INDEX_TOOL = (
     TOOLS_DIR / "index-tool" / "migrationtools" / "documentdb_index_tool.py"
@@ -1228,7 +1381,7 @@ def scan_cluster(api: AtlasAPI, cluster_info: dict, uri: str) -> list[dict]:
     return remediation_items
 
 
-def _write_project_summary(data) -> None:
+def _write_project_summary(data, suffix: str = "") -> None:
     """Write a single comprehensive report -- the one file you send to your boss.
 
     Accepts either:
@@ -1548,7 +1701,8 @@ def _write_project_summary(data) -> None:
     summary_text = "\n".join(L)
     print(summary_text)
 
-    out_file = RESULTS_DIR / "project_summary.txt"
+    filename = f"project_summary_{suffix}.txt" if suffix else "project_summary.txt"
+    out_file = RESULTS_DIR / filename
     out_file.write_text(summary_text, encoding="utf-8")
     print(f"  -> saved to {out_file}")
 
@@ -1595,55 +1749,76 @@ def _scan_project(api, project_name: str, target_cluster: str = "") -> tuple[str
 
 
 def main() -> None:
-    """Entry point: load config, discover clusters, run all scans, generate report."""
+    """Entry point: load config, discover clusters, run all scans, generate report.
+
+    Usage::
+
+        python run_compat_check.py                          # scan all projects & clusters
+        python run_compat_check.py --project MyProject      # scan one project, all clusters
+        python run_compat_check.py --cluster Cluster0       # scan one cluster across all projects
+        python run_compat_check.py --project P --cluster C  # scan one cluster in one project
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="MongoDB Atlas -> DocumentDB compatibility scanner")
+    parser.add_argument("--project", default="",
+                        help="Scan only this project (omit to scan all)")
+    parser.add_argument("--cluster", default="",
+                        help="Scan only this cluster (omit to scan all)")
+    args = parser.parse_args()
+
     load_dotenv(BASE_DIR / ".env")
 
-    # Validate minimal Atlas API env
-    for var in ("atlas_public_key", "atlas_private_key", "atlas_group_id"):
-        val = os.environ.get(var, "")
-        if not val or "YOUR_" in val:
-            sys.exit(f"Missing or placeholder env var: {var}")
+    # Validate org-level credentials
+    org_client_id = os.environ.get("atlas_organization_Client_ID", "").strip()
+    org_client_secret = os.environ.get("atlas_organization_Client_Secret", "").strip()
+
+    if not org_client_id or not org_client_secret:
+        sys.exit("Missing atlas_organization_Client_ID or "
+                 "atlas_organization_Client_Secret in .env")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     step_clone_tools()
     step_install_deps()
 
-    # Check for org-level credentials (multi-project mode)
-    org_client_id = os.environ.get("atlas_organization_Client_ID", "").strip()
-    org_client_secret = os.environ.get("atlas_organization_Client_Secret", "").strip()
-    target_cluster = os.environ.get("atlas_cluster_name", "").strip()
+    _banner("Discovering projects from organization")
+    org_api = AtlasOrgAPI(org_client_id, org_client_secret)
+    all_projects = org_api.list_projects()
+    print(f"  Found {len(all_projects)} project(s): "
+          f"{[p['name'] for p in all_projects]}")
 
-    if org_client_id and org_client_secret:
-        # ----- Multi-project mode: discover all projects from the org -----
-        _banner("Discovering projects from organization")
-        org_api = AtlasOrgAPI(org_client_id, org_client_secret)
-        all_projects = org_api.list_projects()
-        print(f"  Found {len(all_projects)} project(s): "
-              f"{[p['name'] for p in all_projects]}")
-
-        # all_results: {project_name: {cluster_name: [items]}}
-        all_results: dict[str, dict[str, list[dict]]] = {}
-
-        for proj in all_projects:
-            proj_name = proj["name"]
-            proj_id = proj["id"]
-            proj_api = org_api.as_atlas_api(proj_id)
-            _, cluster_items = _scan_project(
-                proj_api, proj_name, target_cluster)
-            if cluster_items:
-                all_results[proj_name] = cluster_items
-
-        _write_project_summary(all_results)
+    if args.project:
+        projects = [p for p in all_projects
+                    if p["name"].lower() == args.project.lower()]
+        if not projects:
+            sys.exit(f"Project '{args.project}' not found. "
+                     f"Available: {[p['name'] for p in all_projects]}")
+        print(f"  Filtered to project: {args.project}")
     else:
-        # ----- Single-project mode (backward compatible) -----
-        api = AtlasAPI(
-            os.environ["atlas_public_key"],
-            os.environ["atlas_private_key"],
-            os.environ["atlas_group_id"],
-        )
-        _banner("Discovering clusters")
-        _, cluster_items = _scan_project(api, "Default Project", target_cluster)
-        _write_project_summary(cluster_items)
+        projects = all_projects
+
+    # all_results: {project_name: {cluster_name: [items]}}
+    all_results: dict[str, dict[str, list[dict]]] = {}
+
+    for proj in projects:
+        proj_name = proj["name"]
+        proj_id = proj["id"]
+        proj_api = org_api.as_atlas_api(proj_id)
+        _, cluster_items = _scan_project(
+            proj_api, proj_name, args.cluster)
+        if cluster_items:
+            all_results[proj_name] = cluster_items
+
+    # Compute suffix for the summary filename
+    if args.cluster:
+        summary_suffix = f"c-{args.cluster}"
+    elif args.project:
+        summary_suffix = f"p-{args.project}"
+    else:
+        summary_suffix = "all"
+
+    _write_project_summary(all_results, suffix=summary_suffix)
 
     print(f"\n{'=' * 60}")
     print(f"  All done. Reports are in: {RESULTS_DIR}/")
