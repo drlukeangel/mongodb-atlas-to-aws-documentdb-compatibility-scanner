@@ -1,0 +1,690 @@
+======================================================================
+  MongoDB Atlas -> Amazon DocumentDB 8.0
+  Compatibility Assessment Report
+======================================================================
+  Generated: 2026-02-18T17:29:13.392684
+
+----------------------------------------------------------------------
+  MIGRATION READINESS
+----------------------------------------------------------------------
+
+  Migrate immediately:            2 / 5 clusters  (40%)
+  Migrate with code changes:      1 / 5 clusters  (20%)
+  Requires AWS service swap:      2 / 5 clusters  (40%)
+
+  Est. total remediation effort: ~154 hours  (~$13,090)
+
+  Clusters requiring AWS service substitution:
+    - ct-ts-0218-2207
+        Change Stream Pre/Post Images -> DynamoDB Streams
+        Time-Series Collection -> Amazon Timestream
+    - ct-files-0218-2207
+        GridFS File Storage -> Amazon S3
+
+----------------------------------------------------------------------
+  EXECUTIVE SUMMARY
+----------------------------------------------------------------------
+  Projects scanned:       4
+  Clusters scanned:       5
+  Clusters ready (clean): 2
+  Clusters with issues:   3
+  Total issues found:     27
+  Est. remediation effort: ~154 hours
+
+  Unsupported operators (34 unique):
+    Operator                   Count   DocDB Migration Path
+    ------------------------- ------   -----------------------------------
+    $accumulator                   3   Rewrite as standard aggregation pipeline stages
+    $binarySize                    3   Move binary size checks to application code
+    $bottomN                       3   Use $sort + $limit or application-side processing
+    $bsonSize                      3   Move document size checks to application code
+    $bucketAuto                    3   Use $bucket with explicit boundaries or compute buckets in app code
+    $cos                           3   Move trigonometric calculations to application code
+    $dateDiff                      3   Use $subtract with date math or compute in application code
+    $degreesToRadians              3   Move angle conversion to application code
+    $denseRank                     3   Use $group + $sort + application-side ranking
+    $densify                       3   Fill gaps in application code or pre-process data before insert
+    $derivative                    3   Calculate derivative in application code
+    $documentNumber                3   Use $group + application-side row numbering
+    $expMovingAvg                  3   Calculate moving average in application code
+    $facet                         3   Split into multiple aggregation queries executed in parallel
+    $fill                          3   Handle missing values in application code
+    $firstN                        3   Use $sort + $limit or application-side processing
+    $function                      3   Rewrite as standard aggregation pipeline stages or move to app code
+    $getField                      3   Use dot notation or $let for dynamic field access
+    $graphLookup                   3   Flatten hierarchy into materialized path at write time, or do recursive lookups in app code
+    $integral                      3   Calculate integral in application code
+    $isNumber                      3   Use $type operator or validate types in application code
+    $lastN                         3   Use $sort + $limit or application-side processing
+    $maxN                          3   Use $sort + $limit or application-side processing
+    $minN                          3   Use $sort + $limit or application-side processing
+    $rank                          3   Use $group + $sort + application-side ranking
+    $sampleRate                    3   Use $sample stage or application-side random sampling
+    $setWindowFields               9   Rewrite as application-side logic or split into $group + $sort pipeline stages
+    $shift                         3   Use application-side lag/lead processing
+    $sin                           3   Move trigonometric calculations to application code
+    $sortByCount                   3   Use $group + $sort pipeline stages
+    $tan                           3   Move trigonometric calculations to application code
+    $topN                          3   Use $sort + $limit or application-side processing
+    $unionWith                     3   Execute separate queries and merge results in application code
+    $where                         3   Rewrite as $expr with standard query operators
+
+======================================================================
+  REMEDIATION PLAN
+======================================================================
+
+  PROJECT: Project 0  (0 issue(s), ~0h)
+  ============================================================
+
+    CLUSTER: Cluster0  -- DocDB-ready.
+
+    PROJECT SUBTOTAL: ~0h  (~$0)
+
+  PROJECT: compat-test-analytics-0218-2207  (12 issue(s), ~74h)
+  ============================================================
+
+    CLUSTER: ct-ts-0218-2207  (12 issue(s), ~74h)
+    --------------------------------------------------------
+
+      DATABASE: testanalytics  (7 issue(s), ~58h)
+        1. [Sharded Collection]
+           Affected:  testanalytics.sensor_data
+           Fix:       Evaluate for DocDB elastic clusters (hash shard key only) or consolidate onto a single DocDB instance if data size allows. Remove zone/tag-aware sharding config
+           Effort:    ~12h
+        2. [Time-Series Collection]
+           Affected:  testanalytics.weather
+           Fix:       Migrate to Amazon Timestream (native) or flatten into regular DocDB collection with TTL + compound indexes on (meta, ts)
+           Effort:    ~12h
+        3. [Time-Series Collection]
+           Affected:  testanalytics.system.buckets.weather
+           Fix:       Migrate to Amazon Timestream (native) or flatten into regular DocDB collection with TTL + compound indexes on (meta, ts)
+           Effort:    ~12h
+        4. [Clustered Index]
+           Affected:  testanalytics.system.buckets.weather
+           Fix:       Recreate as regular collection with a standard index on the clustered key field
+           Effort:    ~4h
+        5. [Change Stream Pre/Post Images]
+           Affected:  testanalytics.events
+           Fix:       Remove pre/post image config. Add app-level before/after capture (read-before-write), or use DynamoDB Streams for old+new image support
+           Effort:    ~8h
+        6. [Server-Side JavaScript (system.js)]
+           Affected:  testanalytics.system.js
+           Fix:       Rewrite as aggregation pipelines or app-layer code. For heavy analytics offload to AWS Lambda / EMR / Athena
+           Effort:    ~6h
+        7. [Schema Validator (review needed)]
+           Affected:  testanalytics.system.buckets.weather
+           Fix:       Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:    ~4h
+
+      DATABASE: (query workload)  (5 issue(s), ~16h)
+        8. [Unsupported Math Operator]
+           Affected:  $cos, $degreesToRadians, $sin, $tan
+           Fix:       Move trigonometric calculations to application code
+           Effort:    ~2h
+        9. [Unsupported Date Operator]
+           Affected:  $dateDiff
+           Fix:       Use $subtract with date math or compute in application code
+           Effort:    ~2h
+        10. [Unsupported Window Function]
+           Affected:  $denseRank, $derivative, $expMovingAvg, $integral, $rank, $setWindowFields, $shift
+           Fix:       Use $group + $sort + application-side ranking
+           Effort:    ~6h
+        11. [Unsupported Time-Series Operator]
+           Affected:  $densify, $fill
+           Fix:       Fill gaps in application code or pre-process data before insert
+           Effort:    ~4h
+        12. [Unsupported Field Access Operator]
+           Affected:  $getField
+           Fix:       Use dot notation or $let for dynamic field access
+           Effort:    ~2h
+
+      CLUSTER SUBTOTAL: ~74h  (~$6,290)
+
+    PROJECT SUBTOTAL: ~74h  (~$6,290)
+
+  PROJECT: compat-test-platform-0218-2207  (5 issue(s), ~26h)
+  ============================================================
+
+    CLUSTER: ct-files-0218-2207  (5 issue(s), ~26h)
+    --------------------------------------------------------
+
+      DATABASE: testfiles  (1 issue(s), ~16h)
+        13. [GridFS File Storage]
+           Affected:  testfiles.fs.files, testfiles.fs.chunks
+           Fix:       Migrate to Amazon S3 + DocDB metadata collection. Replace GridFS put/get calls with S3 PutObject/GetObject
+           Effort:    ~16h
+
+      DATABASE: (query workload)  (4 issue(s), ~10h)
+        14. [Unsupported Data Inspection]
+           Affected:  $binarySize, $bsonSize
+           Fix:       Move binary size checks to application code
+           Effort:    ~2h
+        15. [Unsupported N-Accumulator]
+           Affected:  $bottomN, $firstN, $lastN, $maxN, $minN, $topN
+           Fix:       Use $sort + $limit or application-side processing
+           Effort:    ~4h
+        16. [Unsupported Type Check]
+           Affected:  $isNumber
+           Fix:       Use $type operator or validate types in application code
+           Effort:    ~2h
+        17. [Unsupported Sampling]
+           Affected:  $sampleRate
+           Fix:       Use $sample stage or application-side random sampling
+           Effort:    ~2h
+
+      CLUSTER SUBTOTAL: ~26h  (~$2,210)
+
+    PROJECT SUBTOTAL: ~26h  (~$2,210)
+
+  PROJECT: compat-test-web-0218-2207  (10 issue(s), ~54h)
+  ============================================================
+
+    CLUSTER: ct-clean-0218-2207  -- DocDB-ready.
+
+    CLUSTER: ct-app-0218-2207  (10 issue(s), ~54h)
+    --------------------------------------------------------
+
+      DATABASE: testapp  (3 issue(s), ~18h)
+        18. [Capped Collection]
+           Affected:  testapp.logs
+           Fix:       Replace with regular collection + TTL index, or use Amazon Kinesis Data Streams. Replace tailable cursors with change streams
+           Effort:    ~6h
+        19. [Schema Validator (review needed)]
+           Affected:  testapp.posts
+           Fix:       Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:    ~4h
+        20. [View with Unsupported Stages]
+           Affected:  testapp.employee_hierarchy
+           Fix:       Rewrite view pipeline: $graphLookup -> materialized paths at write time; $merge/$out -> app-layer ETL; $facet -> multiple queries
+           Effort:    ~8h
+
+      DATABASE: (query workload)  (7 issue(s), ~36h)
+        21. [Unsupported Server-Side JS]
+           Affected:  $accumulator, $function, $where
+           Fix:       Rewrite as standard aggregation pipeline stages
+           Effort:    ~6h
+        22. [Unsupported Auto Bucketing]
+           Affected:  $bucketAuto
+           Fix:       Use $bucket with explicit boundaries or compute buckets in app code
+           Effort:    ~4h
+        23. [Unsupported Window Function]
+           Affected:  $documentNumber, $setWindowFields
+           Fix:       Use $group + application-side row numbering
+           Effort:    ~6h
+        24. [Unsupported Faceted Search]
+           Affected:  $facet
+           Fix:       Split into multiple aggregation queries executed in parallel
+           Effort:    ~6h
+        25. [Unsupported Graph Traversal]
+           Affected:  $graphLookup
+           Fix:       Flatten hierarchy into materialized path at write time, or do recursive lookups in app code
+           Effort:    ~8h
+        26. [Unsupported Sort By Count]
+           Affected:  $sortByCount
+           Fix:       Use $group + $sort pipeline stages
+           Effort:    ~2h
+        27. [Unsupported Cross-Collection Query]
+           Affected:  $unionWith
+           Fix:       Execute separate queries and merge results in application code
+           Effort:    ~4h
+
+      CLUSTER SUBTOTAL: ~54h  (~$4,590)
+
+    PROJECT SUBTOTAL: ~54h  (~$4,590)
+
+======================================================================
+  TOTALS
+======================================================================
+  Projects scanned:        4
+  Clusters scanned:        5
+  Total issues:            27
+  Total estimated effort:  ~154 hours  (~$13,090)
+
+  NOTE: Effort estimates assume a mid-level developer with some
+  MongoDB experience but limited AWS/DocDB familiarity. Actual
+  time will vary with codebase size, test coverage, and
+  deployment complexity. Estimates include research, code
+  changes, and basic unit testing -- not code review, QA,
+  or production deployment.
+======================================================================
+
+
+======================================================================
+  DETAILED SCAN OUTPUT
+======================================================================
+
+======================================================================
+  PROJECT: Project 0  [READY]
+  1 cluster(s), 0 issue(s), ~0h
+======================================================================
+
+  ----------------------------------------------------------------------
+  CLUSTER: Cluster0  [READY]
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ac-kv7f7py-shard-00-01.zwguupl.mongodb.net:27017
+     + database server has been up for 6.04 days
+     + database server major version is 8
+     + checking compatibility using db.serverStatus()
+    
+    No unsupported operators found.
+
+    --- Compat-tool (log scan) ---
+    [warn] No logs downloaded (may be a tenant/free-tier cluster).
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:27:57,608: No incompatibilities found.
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 0 warning(s) found
+      [info] Databases to scan: ['sample_mflix']
+      [ok] No sharded collections found (replica-set topology).
+      [ok] No time-series collections found.
+      [ok] No GridFS collections found.
+      [ok] No capped collections found.
+      [ok] No clustered indexes found.
+      [ok] No client-side encryption metadata found.
+      [ok] No change-stream pre/post image configurations found.
+      [ok] No server-side JavaScript (system.js) found.
+      [ok] No schema validators found.
+      [info] Could not fetch RW concern defaults: command not found, full error: {'ok': 0, 'errmsg': 'command not found', 'code': 59, 'codeName': 'CommandNotFound'}
+      [ok] No views found.
+      [info] Total user collections: 6, total documents: 67661
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      No incompatibilities found -- cluster is DocDB-ready!
+
+  PROJECT SUBTOTAL: 0 issue(s), ~0h
+
+
+======================================================================
+  PROJECT: compat-test-analytics-0218-2207  [ISSUES FOUND]
+  1 cluster(s), 12 issue(s), ~74h
+======================================================================
+
+  ----------------------------------------------------------------------
+  CLUSTER: ct-ts-0218-2207  [ISSUES FOUND]
+  12 issue(s), ~74h
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ct-ts-0218-2207-config-00-02.oylygp.mongodb.net:27016
+     + database server has been up for 0.01 days
+     + database server major version is 8
+     + checking compatibility using db.serverStatus()
+    
+    The following 1 unsupported operators were found:
+      $queryStats | executed 1 time(s)
+    
+    The following 4 supported operators were found:
+      $expr | executed 4 time(s)
+      $gte | executed 2 time(s)
+      $limit | executed 1 time(s)
+      $sort | executed 1 time(s)
+
+    --- Compat-tool (log scan) ---
+    Processed 13 files, skipped 0 files
+    
+    The following 16 unsupported operators were found:
+      $setWindowFields | found 6 time(s)
+      $cos | found 3 time(s)
+      $dateDiff | found 3 time(s)
+      $degreesToRadians | found 3 time(s)
+      $denseRank | found 3 time(s)
+      $densify | found 3 time(s)
+      $derivative | found 3 time(s)
+      $expMovingAvg | found 3 time(s)
+      $fill | found 3 time(s)
+      $getField | found 3 time(s)
+      $integral | found 3 time(s)
+      $planCacheStats | found 3 time(s)
+      $rank | found 3 time(s)
+      $shift | found 3 time(s)
+      $sin | found 3 time(s)
+      $tan | found 3 time(s)
+    
+    
+    The following 4 supported operators were found:
+      $project | found 24 time(s)
+      $changeStream | found 3 time(s)
+      $collStats | found 3 time(s)
+      $dateTrunc | found 3 time(s)
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:28:24,463: No incompatibilities found.
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 5 warning(s) found
+      [info] Databases to scan: ['testanalytics']
+      [!!] Sharded collections found (DocDB uses elastic clusters differently): ["testanalytics.sensor_data (key: {'device_id': 1})"]
+           -> FIX: DocumentDB elastic clusters support hash-based sharding via a shard key, but NOT range-based shard keys or zone/tag-aware sharding. Options: (A) Migrate to DocDB elastic clusters -- choose a high-cardinality shard key (hashed). (B) If the data fits on a single instance, drop to a non-sharded DocDB cluster and rely on vertical scaling + read replicas. (C) For geographically partitioned data, use separate DocDB clusters per region instead of zone sharding.
+      [!!] Time-series collections found (NOT supported in DocDB): ['testanalytics.weather', 'testanalytics.system.buckets.weather']
+           -> FIX: Replace with Amazon Timestream for time-series workloads, or flatten into a regular DocDB collection with a TTL index on the timestamp field and compound indexes on (meta, ts). Update app writes to insert into flat collection instead of timeseries bucket format.
+      [ok] No GridFS collections found.
+      [ok] No capped collections found.
+      [!!] Clustered indexes found (NOT supported in DocDB): ['testanalytics.system.buckets.weather']
+           -> FIX: Recreate as regular collections in DocDB. Add a standard index on the clustered key field to maintain query performance. DocDB already stores documents efficiently -- the main loss is the storage co-location optimization, which rarely matters at typical document sizes.
+      [ok] No client-side encryption metadata found.
+      [!!] Collections with pre/post images enabled (NOT supported in DocDB): ['testanalytics.events']
+           -> FIX: DocDB change streams return the changed document but not pre-images. Options: (A) Read the full document on each change event via a lookup (adds latency). (B) Use DynamoDB Streams with old/new image capture if the use case fits a key-value pattern. (C) Maintain a before/after audit log collection in app code by writing the old doc before each update.
+      [!!] Server-side JS found (limited Map-Reduce in DocDB): ['testanalytics.system.js (1 functions)']
+           -> FIX: Rewrite server-side JS functions as application code or as DocDB aggregation pipelines. Map-Reduce jobs should be converted to $group/$accumulator aggregation stages. For heavy analytics, consider AWS Lambda triggered by DocDB change streams, or offload to Amazon EMR/Athena via S3 export.
+      [info] Collections with validators (verify syntax compatibility): ['testanalytics.system.buckets.weather']
+           -> FIX: DocDB 5.0+ supports $jsonSchema validation with a subset of keywords. Audit each validator -- remove unsupported keywords (e.g. $regex patterns in schemas, if/then/else). For complex validation, move to app-layer validation (e.g. Pydantic, Joi, Mongoose schemas) before writes.
+      [info] Default read concern: {'level': 'local'}
+      [info] Default write concern: {'w': 'majority', 'wtimeout': 0}
+      [ok] No views found.
+      [info] Total user collections: 6, total documents: 72
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      DATABASE: testanalytics  (7 issue(s), ~58h)
+      ------------------------------------------------------
+        1. Sharded Collection
+           Affected: testanalytics.sensor_data
+           Fix:      Evaluate for DocDB elastic clusters (hash shard key only) or consolidate onto a single DocDB instance if data size allows. Remove zone/tag-aware sharding config
+           Effort:   ~12h
+        2. Time-Series Collection
+           Affected: testanalytics.weather
+           Fix:      Migrate to Amazon Timestream (native) or flatten into regular DocDB collection with TTL + compound indexes on (meta, ts)
+           Effort:   ~12h
+        3. Time-Series Collection
+           Affected: testanalytics.system.buckets.weather
+           Fix:      Migrate to Amazon Timestream (native) or flatten into regular DocDB collection with TTL + compound indexes on (meta, ts)
+           Effort:   ~12h
+        4. Clustered Index
+           Affected: testanalytics.system.buckets.weather
+           Fix:      Recreate as regular collection with a standard index on the clustered key field
+           Effort:   ~4h
+        5. Change Stream Pre/Post Images
+           Affected: testanalytics.events
+           Fix:      Remove pre/post image config. Add app-level before/after capture (read-before-write), or use DynamoDB Streams for old+new image support
+           Effort:   ~8h
+        6. Server-Side JavaScript (system.js)
+           Affected: testanalytics.system.js
+           Fix:      Rewrite as aggregation pipelines or app-layer code. For heavy analytics offload to AWS Lambda / EMR / Athena
+           Effort:   ~6h
+        7. Schema Validator (review needed)
+           Affected: testanalytics.system.buckets.weather
+           Fix:      Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:   ~4h
+    
+    ============================================================
+      CLUSTER TOTAL: 7 issue(s), ~58h estimated dev effort
+    ============================================================
+
+  PROJECT SUBTOTAL: 12 issue(s), ~74h
+
+
+======================================================================
+  PROJECT: compat-test-platform-0218-2207  [ISSUES FOUND]
+  1 cluster(s), 5 issue(s), ~26h
+======================================================================
+
+  ----------------------------------------------------------------------
+  CLUSTER: ct-files-0218-2207  [ISSUES FOUND]
+  5 issue(s), ~26h
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ct-files-0218-2207-shard-00-02.zqvvsj.mongodb.net:27017
+     + database server has been up for 0.01 days
+     + database server major version is 8
+     + checking compatibility using db.serverStatus()
+    
+    The following 1 unsupported operators were found:
+      $queryStats | executed 1 time(s)
+    
+    The following 6 supported operators were found:
+      $collStats | executed 2013 time(s)
+      $eq | executed 92 time(s)
+      $gt | executed 5 time(s)
+      $limit | executed 1 time(s)
+      $ne | executed 1 time(s)
+      $sort | executed 1 time(s)
+
+    --- Compat-tool (log scan) ---
+    Processed 4 files, skipped 0 files
+    
+    The following 10 unsupported operators were found:
+      $binarySize | found 3 time(s)
+      $bottomN | found 3 time(s)
+      $bsonSize | found 3 time(s)
+      $firstN | found 3 time(s)
+      $isNumber | found 3 time(s)
+      $lastN | found 3 time(s)
+      $maxN | found 3 time(s)
+      $minN | found 3 time(s)
+      $sampleRate | found 3 time(s)
+      $topN | found 3 time(s)
+    
+    
+    The following 11 supported operators were found:
+      $project | found 24 time(s)
+      $group | found 18 time(s)
+      $size | found 9 time(s)
+      $$ROOT | found 3 time(s)
+      $limit | found 3 time(s)
+      $match | found 3 time(s)
+      $regexFind | found 3 time(s)
+      $regexFindAll | found 3 time(s)
+      $regexMatch | found 3 time(s)
+      $replaceAll | found 3 time(s)
+      $replaceOne | found 3 time(s)
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:28:46,138: No incompatibilities found.
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 1 warning(s) found
+      [info] Databases to scan: ['testfiles']
+      [ok] No sharded collections found (replica-set topology).
+      [ok] No time-series collections found.
+      [!!] GridFS collections found (NOT supported in DocDB): ['testfiles.fs.files', 'testfiles.fs.chunks']
+           -> FIX: Migrate file storage to Amazon S3. Store file metadata in a regular DocDB collection (filename, size, S3 key, content type). Update app code to use the AWS SDK (S3 PutObject/GetObject) instead of pymongo GridFS. Use S3 presigned URLs for direct client downloads.
+      [ok] No capped collections found.
+      [ok] No clustered indexes found.
+      [ok] No client-side encryption metadata found.
+      [ok] No change-stream pre/post image configurations found.
+      [ok] No server-side JavaScript (system.js) found.
+      [ok] No schema validators found.
+      [info] Default read concern: {'level': 'local'}
+      [info] Default write concern: {'w': 'majority', 'wtimeout': 0}
+      [ok] No views found.
+      [info] Total user collections: 3, total documents: 32
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      DATABASE: testfiles  (1 issue(s), ~16h)
+      ------------------------------------------------------
+        1. GridFS File Storage
+           Affected: testfiles.fs.files, testfiles.fs.chunks
+           Fix:      Migrate to Amazon S3 + DocDB metadata collection. Replace GridFS put/get calls with S3 PutObject/GetObject
+           Effort:   ~16h
+    
+    ============================================================
+      CLUSTER TOTAL: 1 issue(s), ~16h estimated dev effort
+    ============================================================
+
+  PROJECT SUBTOTAL: 5 issue(s), ~26h
+
+
+======================================================================
+  PROJECT: compat-test-web-0218-2207  [ISSUES FOUND]
+  2 cluster(s), 10 issue(s), ~54h
+======================================================================
+
+  ----------------------------------------------------------------------
+  CLUSTER: ct-clean-0218-2207  [READY]
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ct-clean-0218-2207-shard-00-01.yjance.mongodb.net:27017
+     + database server has been up for 0.01 days
+     + database server major version is 8
+     + checking compatibility using db.serverStatus()
+    
+    The following 1 unsupported operators were found:
+      $queryStats | executed 1 time(s)
+    
+    The following 6 supported operators were found:
+      $collStats | executed 1914 time(s)
+      $eq | executed 87 time(s)
+      $gt | executed 3 time(s)
+      $limit | executed 1 time(s)
+      $ne | executed 1 time(s)
+      $sort | executed 1 time(s)
+
+    --- Compat-tool (log scan) ---
+    Processed 3 files, skipped 0 files
+    
+    No unsupported operators found.
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:29:04,414: No incompatibilities found.
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 0 warning(s) found
+      [info] Databases to scan: ['testclean']
+      [ok] No sharded collections found (replica-set topology).
+      [ok] No time-series collections found.
+      [ok] No GridFS collections found.
+      [ok] No capped collections found.
+      [ok] No clustered indexes found.
+      [ok] No client-side encryption metadata found.
+      [ok] No change-stream pre/post image configurations found.
+      [ok] No server-side JavaScript (system.js) found.
+      [ok] No schema validators found.
+      [info] Default read concern: {'level': 'local'}
+      [info] Default write concern: {'w': 'majority', 'wtimeout': 0}
+      [ok] No views found.
+      [info] Total user collections: 2, total documents: 5
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      No incompatibilities found -- cluster is DocDB-ready!
+
+
+  ----------------------------------------------------------------------
+  CLUSTER: ct-app-0218-2207  [ISSUES FOUND]
+  10 issue(s), ~54h
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ct-app-0218-2207-shard-00-01.yjance.mongodb.net:27017
+     + database server has been up for 0.01 days
+     + database server major version is 8
+     + checking compatibility using db.serverStatus()
+    
+    The following 1 unsupported operators were found:
+      $queryStats | executed 1 time(s)
+    
+    The following 7 supported operators were found:
+      $collStats | executed 2046 time(s)
+      $eq | executed 96 time(s)
+      $gt | executed 4 time(s)
+      $jsonSchema | executed 1 time(s)
+      $limit | executed 1 time(s)
+      $ne | executed 1 time(s)
+      $sort | executed 1 time(s)
+
+    --- Compat-tool (log scan) ---
+    Processed 4 files, skipped 0 files
+    
+    The following 11 unsupported operators were found:
+      $accumulator | found 3 time(s)
+      $bucketAuto | found 3 time(s)
+      $documentNumber | found 3 time(s)
+      $facet | found 3 time(s)
+      $function | found 3 time(s)
+      $graphLookup | found 3 time(s)
+      $listSessions | found 3 time(s)
+      $setWindowFields | found 3 time(s)
+      $sortByCount | found 3 time(s)
+      $unionWith | found 3 time(s)
+      $where | found 3 time(s)
+    
+    
+    The following 10 supported operators were found:
+      $addFields | found 3 time(s)
+      $bucket | found 3 time(s)
+      $count | found 3 time(s)
+      $group | found 3 time(s)
+      $limit | found 3 time(s)
+      $merge | found 3 time(s)
+      $out | found 3 time(s)
+      $replaceWith | found 3 time(s)
+      $search | found 3 time(s)
+      $text | found 3 time(s)
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:29:12,149: {
+        "testapp": {
+            "logs": {
+                "unsupported_collection_options": [
+                    "capped"
+                ]
+            }
+        }
+    }
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 2 warning(s) found
+      [info] Databases to scan: ['testapp']
+      [ok] No sharded collections found (replica-set topology).
+      [ok] No time-series collections found.
+      [ok] No GridFS collections found.
+      [!!] Capped collections found (limited support in DocDB): ['testapp.logs']
+           -> FIX: Option A: Use a regular DocDB collection with a TTL index to auto-expire old documents (best for log/event data). Option B: Use Amazon Kinesis Data Streams for high-throughput ordered ingestion, then persist to DocDB. If tailable cursors are used, switch to DocDB change streams.
+      [ok] No clustered indexes found.
+      [ok] No client-side encryption metadata found.
+      [ok] No change-stream pre/post image configurations found.
+      [ok] No server-side JavaScript (system.js) found.
+      [info] Collections with validators (verify syntax compatibility): ['testapp.posts']
+           -> FIX: DocDB 5.0+ supports $jsonSchema validation with a subset of keywords. Audit each validator -- remove unsupported keywords (e.g. $regex patterns in schemas, if/then/else). For complex validation, move to app-layer validation (e.g. Pydantic, Joi, Mongoose schemas) before writes.
+      [info] Default read concern: {'level': 'local'}
+      [info] Default write concern: {'w': 'majority', 'wtimeout': 0}
+      [info] Views found (supported in DocDB 8.0, verify pipeline operators): ["testapp.employee_hierarchy (stages: ['$graphLookup'])"]
+      [!!] Views with potentially unsupported pipeline stages: ["testapp.employee_hierarchy uses ['$graphLookup']"]
+           -> FIX: Rewrite view pipelines to use DocDB-supported aggregation stages. $graphLookup -> flatten hierarchy into a path field at write time, or do recursive lookups in app code. $merge/$out -> use app-layer ETL or AWS Lambda + S3. $facet -> split into multiple aggregation queries.
+      [info] Total user collections: 6, total documents: 10
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      DATABASE: testapp  (3 issue(s), ~18h)
+      ------------------------------------------------------
+        1. Capped Collection
+           Affected: testapp.logs
+           Fix:      Replace with regular collection + TTL index, or use Amazon Kinesis Data Streams. Replace tailable cursors with change streams
+           Effort:   ~6h
+        2. Schema Validator (review needed)
+           Affected: testapp.posts
+           Fix:      Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:   ~4h
+        3. View with Unsupported Stages
+           Affected: testapp.employee_hierarchy
+           Fix:      Rewrite view pipeline: $graphLookup -> materialized paths at write time; $merge/$out -> app-layer ETL; $facet -> multiple queries
+           Effort:   ~8h
+    
+    ============================================================
+      CLUSTER TOTAL: 3 issue(s), ~18h estimated dev effort
+    ============================================================
+
+  PROJECT SUBTOTAL: 10 issue(s), ~54h

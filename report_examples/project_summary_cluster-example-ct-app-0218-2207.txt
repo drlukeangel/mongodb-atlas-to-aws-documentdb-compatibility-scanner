@@ -1,0 +1,282 @@
+======================================================================
+  MongoDB Atlas -> Amazon DocumentDB 8.0
+  Compatibility Assessment Report
+======================================================================
+  Generated: 2026-02-18T17:26:09.701783
+
+----------------------------------------------------------------------
+  MIGRATION READINESS
+----------------------------------------------------------------------
+
+  Migrate immediately:            0 / 1 clusters  (0%)
+  Migrate with code changes:      1 / 1 clusters  (100%)
+  Requires AWS service swap:      0 / 1 clusters  (0%)
+
+  Est. total remediation effort: ~54 hours  (~$4,590)
+
+----------------------------------------------------------------------
+  EXECUTIVE SUMMARY
+----------------------------------------------------------------------
+  Projects scanned:       1
+  Clusters scanned:       1
+  Clusters ready (clean): 0
+  Clusters with issues:   1
+  Total issues found:     10
+  Est. remediation effort: ~54 hours
+
+  Unsupported operators (10 unique):
+    Operator                   Count   DocDB Migration Path
+    ------------------------- ------   -----------------------------------
+    $accumulator                   3   Rewrite as standard aggregation pipeline stages
+    $bucketAuto                    3   Use $bucket with explicit boundaries or compute buckets in app code
+    $documentNumber                3   Use $group + application-side row numbering
+    $facet                         3   Split into multiple aggregation queries executed in parallel
+    $function                      3   Rewrite as standard aggregation pipeline stages or move to app code
+    $graphLookup                   3   Flatten hierarchy into materialized path at write time, or do recursive lookups in app code
+    $setWindowFields               3   Rewrite as application-side logic or split into $group + $sort pipeline stages
+    $sortByCount                   3   Use $group + $sort pipeline stages
+    $unionWith                     3   Execute separate queries and merge results in application code
+    $where                         3   Rewrite as $expr with standard query operators
+
+======================================================================
+  REMEDIATION PLAN
+======================================================================
+
+  PROJECT: compat-test-web-0218-2207  (10 issue(s), ~54h)
+  ============================================================
+
+    CLUSTER: ct-app-0218-2207  (10 issue(s), ~54h)
+    --------------------------------------------------------
+
+      DATABASE: testapp  (3 issue(s), ~18h)
+        1. [Capped Collection]
+           Affected:  testapp.logs
+           Fix:       Replace with regular collection + TTL index, or use Amazon Kinesis Data Streams. Replace tailable cursors with change streams
+           Effort:    ~6h
+        2. [Schema Validator (review needed)]
+           Affected:  testapp.posts
+           Fix:       Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:    ~4h
+        3. [View with Unsupported Stages]
+           Affected:  testapp.employee_hierarchy
+           Fix:       Rewrite view pipeline: $graphLookup -> materialized paths at write time; $merge/$out -> app-layer ETL; $facet -> multiple queries
+           Effort:    ~8h
+
+      DATABASE: (query workload)  (7 issue(s), ~36h)
+        4. [Unsupported Server-Side JS]
+           Affected:  $accumulator, $function, $where
+           Fix:       Rewrite as standard aggregation pipeline stages
+           Effort:    ~6h
+        5. [Unsupported Auto Bucketing]
+           Affected:  $bucketAuto
+           Fix:       Use $bucket with explicit boundaries or compute buckets in app code
+           Effort:    ~4h
+        6. [Unsupported Window Function]
+           Affected:  $documentNumber, $setWindowFields
+           Fix:       Use $group + application-side row numbering
+           Effort:    ~6h
+        7. [Unsupported Faceted Search]
+           Affected:  $facet
+           Fix:       Split into multiple aggregation queries executed in parallel
+           Effort:    ~6h
+        8. [Unsupported Graph Traversal]
+           Affected:  $graphLookup
+           Fix:       Flatten hierarchy into materialized path at write time, or do recursive lookups in app code
+           Effort:    ~8h
+        9. [Unsupported Sort By Count]
+           Affected:  $sortByCount
+           Fix:       Use $group + $sort pipeline stages
+           Effort:    ~2h
+        10. [Unsupported Cross-Collection Query]
+           Affected:  $unionWith
+           Fix:       Execute separate queries and merge results in application code
+           Effort:    ~4h
+
+      CLUSTER SUBTOTAL: ~54h  (~$4,590)
+
+    PROJECT SUBTOTAL: ~54h  (~$4,590)
+
+======================================================================
+  TOTALS
+======================================================================
+  Projects scanned:        1
+  Clusters scanned:        1
+  Total issues:            10
+  Total estimated effort:  ~54 hours  (~$4,590)
+
+  NOTE: Effort estimates assume a mid-level developer with some
+  MongoDB experience but limited AWS/DocDB familiarity. Actual
+  time will vary with codebase size, test coverage, and
+  deployment complexity. Estimates include research, code
+  changes, and basic unit testing -- not code review, QA,
+  or production deployment.
+======================================================================
+
+
+======================================================================
+  DETAILED SCAN OUTPUT
+======================================================================
+
+======================================================================
+  PROJECT: compat-test-web-0218-2207  [ISSUES FOUND]
+  1 cluster(s), 10 issue(s), ~54h
+======================================================================
+
+  ----------------------------------------------------------------------
+  CLUSTER: ct-app-0218-2207  [ISSUES FOUND]
+  10 issue(s), ~54h
+  ----------------------------------------------------------------------
+
+    --- Compat-tool (URI check) ---
+    Gathering usage data for analysis
+     + connecting to the server at ct-app-0218-2207-shard-00-01.yjance.mongodb.net:27017
+    
+    Traceback (most recent call last):
+      File "C:\_dev\mongo-test-compat\aws-docdb-tools\compat-tool\compat.py", line 633, in <module>
+        main(sys.argv[1:])
+        ~~~~^^^^^^^^^^^^^^
+      File "C:\_dev\mongo-test-compat\aws-docdb-tools\compat-tool\compat.py", line 257, in main
+        usageDict = getOperatorsFromServer(args)
+      File "C:\_dev\mongo-test-compat\aws-docdb-tools\compat-tool\compat.py", line 177, in getOperatorsFromServer
+        serverStatus = client.admin.command("serverStatus")
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\_csot.py", line 125, in csot_wrapper
+        return func(self, *args, **kwargs)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\database.py", line 934, in command
+        with self._client._conn_for_reads(read_preference, session, operation=command_name) as (
+             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Python314\Lib\contextlib.py", line 141, in __enter__
+        return next(self.gen)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\mongo_client.py", line 1867, in _conn_from_server
+        with self._checkout(server, session) as conn:
+             ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+      File "C:\Python314\Lib\contextlib.py", line 141, in __enter__
+        return next(self.gen)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\mongo_client.py", line 1777, in _checkout
+        with server.checkout(handler=err_handler) as conn:
+             ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Python314\Lib\contextlib.py", line 141, in __enter__
+        return next(self.gen)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\pool.py", line 1101, in checkout
+        conn = self._get_conn(checkout_started_time, handler=handler)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\pool.py", line 1263, in _get_conn
+        conn = self.connect(handler=handler)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\pool.py", line 1055, in connect
+        conn.authenticate()
+        ~~~~~~~~~~~~~~~~~^^
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\pool.py", line 510, in authenticate
+        auth.authenticate(creds, self, reauthenticate=reauthenticate)
+        ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\auth.py", line 450, in authenticate
+        auth_func(credentials, conn)
+        ~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\auth.py", line 355, in _authenticate_default
+        return _authenticate_scram(credentials, conn, "SCRAM-SHA-1")
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\auth.py", line 96, in _authenticate_scram
+        res = conn.command(source, cmd)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\helpers.py", line 47, in inner
+        return func(*args, **kwargs)
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\pool.py", line 398, in command
+        return command(
+            self,
+        ...<20 lines>...
+            write_concern=write_concern,
+        )
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\synchronous\network.py", line 212, in command
+        helpers_shared._check_command_response(
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+            response_doc,
+            ^^^^^^^^^^^^^
+        ...<2 lines>...
+            parse_write_concern_error=parse_write_concern_error,
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        )
+        ^
+      File "C:\Users\LukeAngel\AppData\Roaming\Python\Python314\site-packages\pymongo\helpers_shared.py", line 284, in _check_command_response
+        raise OperationFailure(errmsg, code, response, max_wire_version)
+    pymongo.errors.OperationFailure: Authentication failed., full error: {'ok': 0.0, 'errmsg': 'Authentication failed.', 'code': 18, 'codeName': 'AuthenticationFailed', '$clusterTime': {'clusterTime': Timestamp(1771453554, 1), 'signature': {'hash': b'\xec`\x96\x81$o\xa6m_\x12\x1b\x1e\x84\xb2X\xc6\x9b\xf1\xda_', 'keyId': 7608332512422526982}}, 'operationTime': Timestamp(1771453554, 1)}
+
+    --- Compat-tool (log scan) ---
+    Processed 4 files, skipped 0 files
+    
+    The following 11 unsupported operators were found:
+      $accumulator | found 3 time(s)
+      $bucketAuto | found 3 time(s)
+      $documentNumber | found 3 time(s)
+      $facet | found 3 time(s)
+      $function | found 3 time(s)
+      $graphLookup | found 3 time(s)
+      $listSessions | found 3 time(s)
+      $setWindowFields | found 3 time(s)
+      $sortByCount | found 3 time(s)
+      $unionWith | found 3 time(s)
+      $where | found 3 time(s)
+    
+    
+    The following 10 supported operators were found:
+      $addFields | found 3 time(s)
+      $bucket | found 3 time(s)
+      $count | found 3 time(s)
+      $group | found 3 time(s)
+      $limit | found 3 time(s)
+      $merge | found 3 time(s)
+      $out | found 3 time(s)
+      $replaceWith | found 3 time(s)
+      $search | found 3 time(s)
+      $text | found 3 time(s)
+
+    --- Index-tool (issues) ---
+    2026-02-18 17:26:07,976: {
+        "testapp": {
+            "logs": {
+                "unsupported_collection_options": [
+                    "capped"
+                ]
+            }
+        }
+    }
+
+    --- Feature scan ---
+    Feature Compatibility Scan -- 2 warning(s) found
+      [info] Databases to scan: ['testapp']
+      [ok] No sharded collections found (replica-set topology).
+      [ok] No time-series collections found.
+      [ok] No GridFS collections found.
+      [!!] Capped collections found (limited support in DocDB): ['testapp.logs']
+           -> FIX: Option A: Use a regular DocDB collection with a TTL index to auto-expire old documents (best for log/event data). Option B: Use Amazon Kinesis Data Streams for high-throughput ordered ingestion, then persist to DocDB. If tailable cursors are used, switch to DocDB change streams.
+      [ok] No clustered indexes found.
+      [ok] No client-side encryption metadata found.
+      [ok] No change-stream pre/post image configurations found.
+      [ok] No server-side JavaScript (system.js) found.
+      [info] Collections with validators (verify syntax compatibility): ['testapp.posts']
+           -> FIX: DocDB 5.0+ supports $jsonSchema validation with a subset of keywords. Audit each validator -- remove unsupported keywords (e.g. $regex patterns in schemas, if/then/else). For complex validation, move to app-layer validation (e.g. Pydantic, Joi, Mongoose schemas) before writes.
+      [info] Default read concern: {'level': 'local'}
+      [info] Default write concern: {'w': 'majority', 'wtimeout': 0}
+      [info] Views found (supported in DocDB 8.0, verify pipeline operators): ["testapp.employee_hierarchy (stages: ['$graphLookup'])"]
+      [!!] Views with potentially unsupported pipeline stages: ["testapp.employee_hierarchy uses ['$graphLookup']"]
+           -> FIX: Rewrite view pipelines to use DocDB-supported aggregation stages. $graphLookup -> flatten hierarchy into a path field at write time, or do recursive lookups in app code. $merge/$out -> use app-layer ETL or AWS Lambda + S3. $facet -> split into multiple aggregation queries.
+      [info] Total user collections: 6, total documents: 10
+    
+    ============================================================
+      CLUSTER REMEDIATION RECAP
+    ============================================================
+    
+      DATABASE: testapp  (3 issue(s), ~18h)
+      ------------------------------------------------------
+        1. Capped Collection
+           Affected: testapp.logs
+           Fix:      Replace with regular collection + TTL index, or use Amazon Kinesis Data Streams. Replace tailable cursors with change streams
+           Effort:   ~6h
+        2. Schema Validator (review needed)
+           Affected: testapp.posts
+           Fix:      Audit $jsonSchema validator for unsupported keywords. Simplify or move complex validation to app layer (Pydantic / Joi / Mongoose)
+           Effort:   ~4h
+        3. View with Unsupported Stages
+           Affected: testapp.employee_hierarchy
+           Fix:      Rewrite view pipeline: $graphLookup -> materialized paths at write time; $merge/$out -> app-layer ETL; $facet -> multiple queries
+           Effort:   ~8h
+    
+    ============================================================
+      CLUSTER TOTAL: 3 issue(s), ~18h estimated dev effort
+    ============================================================
+
+  PROJECT SUBTOTAL: 10 issue(s), ~54h
